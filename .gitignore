@@ -1,7 +1,6 @@
 # Compiled Object files
 *.slo
-*.lo
-*.o
+*.lo *.o
 *.obj
 
 # Precompiled Headers
@@ -27,3 +26,6 @@
 *.exe
 *.out
 *.app
+
+.*
+zenu
