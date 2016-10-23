@@ -7,6 +7,7 @@
 #include <cassert>
 
 #include <ft2build.h>
+#include <freetype/freetype.h>
 
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -118,21 +119,21 @@ class render_object;
 class compiler;
 class mesh_manager;
 class ref_manager;
+class font_manager;
 
 ///
 
 class app {
 public:
-  app(renderer &renderer, controller &controller, timer &timer, compiler &compiler, mesh_manager &mesh_manager, ref_manager &ref_manager)
+  app(renderer &renderer, controller &controller, timer &timer, compiler &compiler, mesh_manager &mesh_manager, ref_manager &ref_manager, font_manager &font_manager)
   : renderer_(renderer)
   , controller_(controller)
   , timer_(timer)
   , compiler_(compiler)
   , mesh_manager_(mesh_manager)
   , ref_manager_(ref_manager)
+  , font_manager_(font_manager)
   {};
-  void init();
-  void quit();
   int main();
 private:
   renderer &renderer_;
@@ -141,6 +142,7 @@ private:
   compiler &compiler_;
   mesh_manager &mesh_manager_;
   ref_manager &ref_manager_;
+  font_manager &font_manager_;
 
   void load();
   void render();
@@ -191,6 +193,7 @@ public:
 class mesh_manager {
 public:
   mesh create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsizeiptr index_size, const GLvoid *indices, size_t stride);
+  void destroy(mesh &mesh);
 };
 
 class ref_manager {
@@ -226,6 +229,13 @@ private:
   const consts_kolor &consts_;
 };
 
+class font_manager {
+public:
+  void init();
+private:
+  FT_Library library_;
+};
+
 //
 
 glm::mat4 camera(float translate, glm::vec2 const & rotate);
@@ -241,7 +251,8 @@ int main() {
   compiler compiler(program_manager, shader_manager);
   mesh_manager mesh_manager;
   ref_manager ref_manager;
-  app app(renderer, controller, timer, compiler, mesh_manager, ref_manager);
+  font_manager font_manager;
+  app app(renderer, controller, timer, compiler, mesh_manager, ref_manager, font_manager);
   return app.main();
 }
 
@@ -314,6 +325,7 @@ void app::render()
 
 int app::main() {
   renderer_.init();
+  font_manager_.init();
   this->load();
   while (!controller_.quit()) {
     controller_.poll();
@@ -455,6 +467,11 @@ mesh mesh_manager::create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsize
   return mesh;
 }
 
+void mesh_manager::destroy(mesh &mesh) {
+  glDeleteBuffers(1, &mesh.vbo);
+  glDeleteBuffers(1, &mesh.ibo);
+}
+
 void render_object::render() {
   glUseProgram(ref_.program);
   
@@ -479,6 +496,38 @@ program_id compiler::compile(const source &vert_source, const source &frag_sourc
   shader_manager_.destroy(vert);
   shader_manager_.destroy(frag);
   return program_id;
+}
+
+void font_manager::init() {
+  if(FT_Init_FreeType(&library_)) {
+    fprintf(stderr, "Could not init freetype library\n");
+    exit(1);
+  }
+
+  FT_Face face;
+  if(FT_New_Face(library_, "data/Fiery_Turk.ttf", 0, &face)) {
+    fprintf(stderr, "Could not open font\n");
+    exit(1);
+  }
+  FT_Set_Pixel_Sizes(face, 0, 48);
+
+  {
+    const FT_ULong ch = 'A';
+    if(FT_Load_Char(face, ch, FT_LOAD_RENDER)) {
+      fprintf(stderr, "Could not load character '%lu'\n", ch);
+      exit(1);
+    }
+    FT_GlyphSlot g = face->glyph;
+
+    std::cout << "glyph: " << ch << std::endl;
+    std::cout << "  bitmap.buffer " << (void*)g->bitmap.buffer << std::endl;
+    std::cout << "  bitmap.width " << g->bitmap.width << std::endl;
+    std::cout << "  bitmap.rows " << g->bitmap.rows << std::endl;
+    std::cout << "  bitmap_left " << g->bitmap_left << std::endl;
+    std::cout << "  bitmap_top " << g->bitmap_top << std::endl;
+    std::cout << "  advance.x " << g->advance.x / 64 << std::endl;
+    std::cout << "  advance.y " << g->advance.y / 64 << std::endl;
+  }
 }
 
 //
