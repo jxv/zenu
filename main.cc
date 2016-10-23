@@ -94,7 +94,7 @@ struct frame {
   int end_index;
 };
 
-struct uniforms_kolor {
+struct consts_kolor {
   glm::mat4 &mvp;
   glm::vec3 &kolor;
 };
@@ -117,17 +117,19 @@ class compiler;
 class render_object;
 class compiler;
 class mesh_manager;
+class ref_manager;
 
 ///
 
 class app {
 public:
-  app(renderer &renderer, controller &controller, timer &timer, compiler &compiler, mesh_manager &mesh_manager)
+  app(renderer &renderer, controller &controller, timer &timer, compiler &compiler, mesh_manager &mesh_manager, ref_manager &ref_manager)
   : renderer_(renderer)
   , controller_(controller)
   , timer_(timer)
   , compiler_(compiler)
   , mesh_manager_(mesh_manager)
+  , ref_manager_(ref_manager)
   {};
   void init();
   void quit();
@@ -138,6 +140,13 @@ private:
   timer &timer_;
   compiler &compiler_;
   mesh_manager &mesh_manager_;
+  ref_manager &ref_manager_;
+
+  void load();
+  void render();
+
+  mesh mesh_;
+  ref_kolor ref_;
 };
 
 class renderer {
@@ -184,6 +193,11 @@ public:
   mesh create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsizeiptr index_size, const GLvoid *indices, size_t stride);
 };
 
+class ref_manager {
+public:
+  ref_kolor create_kolor(program_id program_id);
+};
+
 class compiler {
 public:
   compiler(program_manager &program_manager, shader_manager &shader_manager)
@@ -198,23 +212,38 @@ private:
 
 class render_object {
 public:
-  render_object(const ref_kolor &ref, const mesh &mesh, const frame &frame, const uniforms_kolor &uni)
+  render_object(const ref_kolor &ref, const mesh &mesh, const frame &frame, const consts_kolor &consts)
   : ref_(ref)
   , mesh_(mesh)
   , frame_(frame)
-  , uni_(uni)
+  , consts_(consts)
   {};
   void render();
 private:
   const ref_kolor &ref_;
   const mesh &mesh_;
   const frame &frame_;
-  const uniforms_kolor &uni_;
+  const consts_kolor &consts_;
 };
 
 //
 
 glm::mat4 camera(float translate, glm::vec2 const & rotate);
+
+//
+
+int main() {
+  renderer renderer;
+  controller controller;
+  timer timer;
+  program_manager program_manager;
+  shader_manager shader_manager;
+  compiler compiler(program_manager, shader_manager);
+  mesh_manager mesh_manager;
+  ref_manager ref_manager;
+  app app(renderer, controller, timer, compiler, mesh_manager, ref_manager);
+  return app.main();
+}
 
 //
 
@@ -241,51 +270,55 @@ source make_source_from_content(const char *content) {
   };
 }
 
-int app::main() {
-  renderer_.init();
+ref_kolor ref_manager::create_kolor(program_id program_id) {
+  glUseProgram(program_id);
+  return {
+    .program = program_id,
+    .a_position = glGetAttribLocation(program_id, "a_position"),
+    .u_mvp = glGetUniformLocation(program_id, "u_mvp"),
+    .u_kolor = glGetUniformLocation(program_id, "u_kolor"),
+  };
+}
 
+void app::load() {
   const source vertex_source = make_source_from_content(kolor_vert_src);
   const source fragment_source = make_source_from_content(kolor_frag_src);
+  const program_id program_id = compiler_.compile(vertex_source, fragment_source);
+  ref_ = ref_manager_.create_kolor(program_id);
+  mesh_ = mesh_manager_.create(cube_positions_size * sizeof(float), cube_positions, cube_indices_size * sizeof(unsigned short int), cube_indices, 3 * sizeof(float));
 
-  mesh mesh;
-  ref_kolor ref;
+}
 
-  {
-    const program_id program_id = compiler_.compile(vertex_source, fragment_source);
+void app::render()
+{
+  float translate = 1.6;
+  static glm::vec2 rotate(0.3, 0);
+  rotate.x += 0.01;
+  rotate.y += 0.03;
+  glm::mat4 mvp = camera(translate, rotate);
+  glm::vec3 kolor(1.f,1.f,1.f);
 
-    glUseProgram(program_id);
-    ref.program = program_id;
-    ref.a_position = glGetAttribLocation(ref.program, "a_position");
-    ref.u_mvp = glGetUniformLocation(ref.program, "u_mvp");
-    ref.u_kolor = glGetUniformLocation(ref.program, "u_kolor");
+  const frame frame = {
+    .start_index = 0,
+    .end_index = 36 - 1,
+  };
 
-    mesh = mesh_manager_.create(cube_positions_size * sizeof(float), cube_positions, cube_indices_size * sizeof(unsigned short int), cube_indices, 3 * sizeof(float));
-  }
+  const consts_kolor consts = {
+    .mvp = mvp,
+    .kolor = kolor,
+  };
 
+  render_object render_kolor(ref_, mesh_, frame, consts);
+  render_kolor.render();
+}
+
+int app::main() {
+  renderer_.init();
+  this->load();
   while (!controller_.quit()) {
     controller_.poll();
     renderer_.clear();
-    {
-      float translate = 1.6;
-      static glm::vec2 rotate(0.3, 0);
-      rotate.x += 0.01;
-      rotate.y += 0.03;
-      glm::mat4 mvp = camera(translate, rotate);
-      glm::vec3 kolor(1.f,1.f,1.f);
-
-      const frame frame = {
-        .start_index = 0,
-        .end_index = 36 - 1,
-      };
-
-      const uniforms_kolor uni = {
-        .mvp = mvp,
-        .kolor = kolor,
-      };
-
-      render_object render_kolor(ref, mesh, frame, uni);
-      render_kolor.render();
-    }
+    this->render();
     renderer_.render();
     timer_.delay();
   }
@@ -425,8 +458,8 @@ mesh mesh_manager::create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsize
 void render_object::render() {
   glUseProgram(ref_.program);
   
-  glUniformMatrix4fv(ref_.u_mvp, 1, GL_FALSE, (float*)&uni_.mvp);
-  glUniform3fv(ref_.u_kolor, 1, (float*)&uni_.kolor);
+  glUniformMatrix4fv(ref_.u_mvp, 1, GL_FALSE, (float*)&consts_.mvp);
+  glUniform3fv(ref_.u_kolor, 1, (float*)&consts_.kolor);
 
   glBindBuffer(GL_ARRAY_BUFFER, mesh_.vbo);
   glEnableVertexAttribArray(ref_.a_position);
@@ -459,16 +492,3 @@ glm::mat4 camera(float translate, glm::vec2 const & rotate) {
   return projection * view * model;
 }
 
-//
-
-int main() {
-  renderer renderer;
-  controller controller;
-  timer timer;
-  program_manager program_manager;
-  shader_manager shader_manager;
-  compiler compiler(program_manager, shader_manager);
-  mesh_manager mesh_manager;
-  app app(renderer, controller, timer, compiler, mesh_manager);
-  return app.main();
-}
