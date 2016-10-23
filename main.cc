@@ -73,11 +73,6 @@ typedef GLuint program_id;
 typedef GLuint vbo;
 typedef GLuint ibo;
 
-struct mesh {
-  GLuint vbo;
-  GLuint ibo;
-};
-
 struct source {
   const GLchar *content;
   GLint length;
@@ -88,12 +83,15 @@ struct shaders {
   shader_id frag;
 };
 
-struct mesh_kolor {
+struct mesh {
   GLuint vbo;
   GLuint ibo;
+  size_t stride;
+};
+
+struct frame {
   int start_index;
   int end_index;
-  size_t stride;
 };
 
 struct uniforms_kolor {
@@ -108,35 +106,28 @@ struct ref_kolor {
   GLint u_kolor;
 };
 
-///
-
-struct {
-    GLuint program;
-    GLint a_position;
-    GLint u_mvp;
-    GLint u_kolor;
-} shader_kolor;
-
-mesh cube;
-
-///
+//
 
 class renderer;
 class controller;
 class timer;
 class shader_manager;
 class program_manager;
-class loader;
+class compiler;
+class render_object;
+class compiler;
+class mesh_manager;
 
 ///
 
 class app {
 public:
-  app(renderer &renderer, controller &controller, timer &timer, loader &loader)
+  app(renderer &renderer, controller &controller, timer &timer, compiler &compiler, mesh_manager &mesh_manager)
   : renderer_(renderer)
   , controller_(controller)
   , timer_(timer)
-  , loader_(loader)
+  , compiler_(compiler)
+  , mesh_manager_(mesh_manager)
   {};
   void init();
   void quit();
@@ -145,7 +136,8 @@ private:
   renderer &renderer_;
   controller &controller_;
   timer &timer_;
-  loader &loader_;
+  compiler &compiler_;
+  mesh_manager &mesh_manager_;
 };
 
 class renderer {
@@ -189,27 +181,39 @@ public:
 
 class mesh_manager {
 public:
-  mesh create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsizeiptr index_size, const GLvoid *indices);
+  mesh create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsizeiptr index_size, const GLvoid *indices, size_t stride);
 };
 
-class loader {
+class compiler {
 public:
-  loader(program_manager &program_manager, shader_manager &shader_manager, mesh_manager &mesh_manager)
+  compiler(program_manager &program_manager, shader_manager &shader_manager)
   : shader_manager_(shader_manager)
   , program_manager_(program_manager)
-  , mesh_manager_(mesh_manager)
   {}
-  void load();
+  program_id compile(const source &vert_source, const source &frag_source);
 private:
   shader_manager shader_manager_;
   program_manager program_manager_;
-  mesh_manager mesh_manager_;
+};
+
+class render_object {
+public:
+  render_object(const ref_kolor &ref, const mesh &mesh, const frame &frame, const uniforms_kolor &uni)
+  : ref_(ref)
+  , mesh_(mesh)
+  , frame_(frame)
+  , uni_(uni)
+  {};
+  void render();
+private:
+  const ref_kolor &ref_;
+  const mesh &mesh_;
+  const frame &frame_;
+  const uniforms_kolor &uni_;
 };
 
 //
 
-program_id make_program(shader_manager &shader_manager, program_manager &program_manager, const source &vert_source, const source &frag_source);
-void render_kolor(const ref_kolor &ref, const mesh_kolor &mesh, const uniforms_kolor &uni);
 glm::mat4 camera(float translate, glm::vec2 const & rotate);
 
 //
@@ -230,9 +234,34 @@ bool controller::quit() {
   return quit_;
 }
 
+source make_source_from_content(const char *content) {
+  return {
+    .content = content,
+    .length = (GLint)strlen(content),
+  };
+}
+
 int app::main() {
   renderer_.init();
-  loader_.load();
+
+  const source vertex_source = make_source_from_content(kolor_vert_src);
+  const source fragment_source = make_source_from_content(kolor_frag_src);
+
+  mesh mesh;
+  ref_kolor ref;
+
+  {
+    const program_id program_id = compiler_.compile(vertex_source, fragment_source);
+
+    glUseProgram(program_id);
+    ref.program = program_id;
+    ref.a_position = glGetAttribLocation(ref.program, "a_position");
+    ref.u_mvp = glGetUniformLocation(ref.program, "u_mvp");
+    ref.u_kolor = glGetUniformLocation(ref.program, "u_kolor");
+
+    mesh = mesh_manager_.create(cube_positions_size * sizeof(float), cube_positions, cube_indices_size * sizeof(unsigned short int), cube_indices, 3 * sizeof(float));
+  }
+
   while (!controller_.quit()) {
     controller_.poll();
     renderer_.clear();
@@ -244,19 +273,9 @@ int app::main() {
       glm::mat4 mvp = camera(translate, rotate);
       glm::vec3 kolor(1.f,1.f,1.f);
 
-      const ref_kolor ref = {
-        .program = shader_kolor.program,
-        .a_position = shader_kolor.a_position,
-        .u_mvp = shader_kolor.u_mvp,
-        .u_kolor = shader_kolor.u_kolor,
-      };
-
-      const mesh_kolor mesh = {
-        .vbo = cube.vbo,
-        .ibo = cube.ibo,
+      const frame frame = {
         .start_index = 0,
         .end_index = 36 - 1,
-        .stride = 3 * sizeof(float),
       };
 
       const uniforms_kolor uni = {
@@ -264,7 +283,8 @@ int app::main() {
         .kolor = kolor,
       };
 
-      render_kolor(ref, mesh, uni);
+      render_object render_kolor(ref, mesh, frame, uni);
+      render_kolor.render();
     }
     renderer_.render();
     timer_.delay();
@@ -388,7 +408,7 @@ void program_manager::destroy(program_id program_id) {
   glDeleteProgram(program_id);
 }
 
-mesh mesh_manager::create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsizeiptr index_size, const GLvoid *indices) {
+mesh mesh_manager::create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsizeiptr index_size, const GLvoid *indices, size_t stride) {
   mesh mesh;
   glGenBuffers(1, &mesh.vbo);
   glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
@@ -397,67 +417,38 @@ mesh mesh_manager::create(GLsizeiptr vertex_size, const GLvoid *vertices, GLsize
   glGenBuffers(1, &mesh.ibo);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ibo);
   glBufferData(GL_ELEMENT_ARRAY_BUFFER, index_size, indices, GL_STATIC_DRAW);
+
+  mesh.stride = stride;
   return mesh;
 }
 
-void loader::load() {
-  const source vertex_source = {
-    .content = kolor_vert_src,
-    .length = (GLint)strlen(kolor_vert_src),
-  };
-  const source fragment_source = {
-    .content = kolor_frag_src,
-    .length = (GLint)strlen(kolor_frag_src),
-  };
-  const program_id program_id = make_program(shader_manager_, program_manager_, vertex_source, fragment_source);
-  glUseProgram(program_id);
-
-  shader_kolor.program = program_id;
-  shader_kolor.a_position = glGetAttribLocation(shader_kolor.program, "a_position");
-  shader_kolor.u_mvp = glGetUniformLocation(shader_kolor.program, "u_mvp");
-  shader_kolor.u_kolor = glGetUniformLocation(shader_kolor.program, "u_kolor");
-
-  cube = mesh_manager_.create(cube_positions_size * sizeof(float), cube_positions, cube_indices_size * sizeof(unsigned short int), cube_indices);
-}
-
-int main() {
-  renderer renderer;
-  controller controller;
-  timer timer;
-  program_manager program_manager;
-  shader_manager shader_manager;
-  mesh_manager mesh_manager;
-  loader loader(program_manager, shader_manager, mesh_manager);
-  app app(renderer, controller, timer, loader);
-  return app.main();
-}
-
-void render_kolor(const ref_kolor &ref, const mesh_kolor &mesh, const uniforms_kolor &uni) {
-  glUseProgram(ref.program);
+void render_object::render() {
+  glUseProgram(ref_.program);
   
-  glUniformMatrix4fv(ref.u_mvp, 1, GL_FALSE, (float*)&uni.mvp);
-  glUniform3fv(ref.u_kolor, 1, (float*)&uni.kolor);
+  glUniformMatrix4fv(ref_.u_mvp, 1, GL_FALSE, (float*)&uni_.mvp);
+  glUniform3fv(ref_.u_kolor, 1, (float*)&uni_.kolor);
 
-  glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
-  glEnableVertexAttribArray(ref.a_position);
-  glVertexAttribPointer(ref.a_position, 3, GL_FLOAT, GL_FALSE, mesh.stride, 0);
+  glBindBuffer(GL_ARRAY_BUFFER, mesh_.vbo);
+  glEnableVertexAttribArray(ref_.a_position);
+  glVertexAttribPointer(ref_.a_position, 3, GL_FLOAT, GL_FALSE, mesh_.stride, 0);
 
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ibo);
-  glDrawElements(GL_TRIANGLES, 1 + mesh.end_index - mesh.start_index, GL_UNSIGNED_SHORT, (void*)(sizeof(GLushort) * mesh.start_index));
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh_.ibo);
+  glDrawElements(GL_TRIANGLES, 1 + frame_.end_index - frame_.start_index, GL_UNSIGNED_SHORT, (void*)(sizeof(GLushort) * frame_.start_index));
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-  glDisableVertexAttribArray(ref.a_position);
+  glDisableVertexAttribArray(ref_.a_position);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-program_id make_program(shader_manager &shader_manager, program_manager &program_manager, const source &vert_source, const source &frag_source) {
-  const shader_id vert = shader_manager.create(vert_source, GL_VERTEX_SHADER);
-  const shader_id frag = shader_manager.create(frag_source, GL_FRAGMENT_SHADER);
-  const program_id program_id = program_manager.create(vert, frag);
-  shader_manager.destroy(vert);
-  shader_manager.destroy(frag);
+program_id compiler::compile(const source &vert_source, const source &frag_source) {
+  const shader_id vert = shader_manager_.create(vert_source, GL_VERTEX_SHADER);
+  const shader_id frag = shader_manager_.create(frag_source, GL_FRAGMENT_SHADER);
+  const program_id program_id = program_manager_.create(vert, frag);
+  shader_manager_.destroy(vert);
+  shader_manager_.destroy(frag);
   return program_id;
 }
 
+//
 
 glm::mat4 camera(float translate, glm::vec2 const & rotate) {
   glm::mat4 projection = glm::perspective(glm::radians(45.0f), 4.0f / 3.0f, 0.1f, 100.f);
@@ -466,4 +457,18 @@ glm::mat4 camera(float translate, glm::vec2 const & rotate) {
   view = glm::rotate(view, rotate.x, glm::vec3(0.0f, 1.0f, 0.0f));
   glm::mat4 model = glm::scale(glm::mat4(1.0f), glm::vec3(0.5f));
   return projection * view * model;
+}
+
+//
+
+int main() {
+  renderer renderer;
+  controller controller;
+  timer timer;
+  program_manager program_manager;
+  shader_manager shader_manager;
+  compiler compiler(program_manager, shader_manager);
+  mesh_manager mesh_manager;
+  app app(renderer, controller, timer, compiler, mesh_manager);
+  return app.main();
 }
